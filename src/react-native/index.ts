@@ -13,6 +13,9 @@ export class ReactNativeAnalyticsClient extends BaseAnalyticsClient {
     super(new FetchTransport(), customStorage || new MemoryStorage());
     this.offlineQueue = new OfflineQueue(50, false);
     this.flagsManager = new RemoteFlagsManager(false);
+    // React Native owns a persistent offline queue - the base client's in-memory
+    // retry queue is disabled to avoid double-buffering the same event.
+    this.enableAutoRetry = false;
   }
 
   public override init(options: AnalyticsConfig): void {

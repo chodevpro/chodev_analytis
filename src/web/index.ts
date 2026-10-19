@@ -9,6 +9,7 @@ export class WebAnalyticsClient extends BaseAnalyticsClient {
   private autoTracker?: AutoPageviewTracker;
   private lastPageviewPath = '';
   private lastPageviewTimestamp = 0;
+  private unloadHooked = false;
 
   constructor() {
     super(new WebTransport(), new LocalStorageAdapter());
@@ -20,11 +21,27 @@ export class WebAnalyticsClient extends BaseAnalyticsClient {
       platform: 'web',
     });
 
-    if (this.config && this.config.autoPageview && typeof window !== 'undefined') {
-      this.autoTracker = new AutoPageviewTracker((newPath) => {
-        this.pageview(newPath);
-      });
-      this.autoTracker.start();
+    if (this.config && typeof window !== 'undefined') {
+      if (this.config.autoPageview) {
+        this.autoTracker = new AutoPageviewTracker((newPath) => {
+          this.pageview(newPath);
+        });
+        this.autoTracker.start();
+
+        // Track the landing pageview immediately. Previously only subsequent route
+        // changes were tracked, so the first page of every visit was lost.
+        void this.pageview();
+      }
+
+      // Flush queued (previously failed) events when the page is being hidden.
+      // At this point the transport prefers navigator.sendBeacon, which survives
+      // page teardown. Backend eventId dedupe keeps the flush idempotent.
+      if (!this.unloadHooked) {
+        this.unloadHooked = true;
+        window.addEventListener('pagehide', () => {
+          void this.flushQueue();
+        });
+      }
     }
   }
 

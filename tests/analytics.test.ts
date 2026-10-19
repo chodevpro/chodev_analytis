@@ -274,4 +274,175 @@ describe('@chodev/analytics Comprehensive Test Suite', () => {
     assert.equal(mockTransport.sentEvents.length, 1);
     assert.equal(mockTransport.sentEvents[0].screen, 'OfflineScreen');
   });
+
+  // 19. Idempotent eventId on every payload
+  test('19. Every event payload carries a unique UUID v4 eventId', async () => {
+    const client = new WebAnalyticsClient();
+    // @ts-ignore
+    client['transport'] = mockTransport;
+    client.init({ siteId: 'cda_prod_123', autoPageview: false });
+
+    await client.pageview('/first');
+    await client.pageview('/second');
+
+    const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    assert.equal(mockTransport.sentEvents.length, 2);
+    assert.ok(mockTransport.sentEvents[0].eventId, 'eventId must be present');
+    assert.match(mockTransport.sentEvents[0].eventId!, uuidV4);
+    assert.notEqual(mockTransport.sentEvents[0].eventId, mockTransport.sentEvents[1].eventId);
+  });
+
+  // 20. Dedupe narrowed: custom events never swallowed
+  test('20. Identical custom events fired in quick succession are both sent', async () => {
+    const client = new BaseAnalyticsClient(mockTransport, memoryStorage);
+    client.init({ siteId: 'cda_prod_123' });
+
+    const first = await client.track('add_to_cart', { productId: 42 });
+    const second = await client.track('add_to_cart', { productId: 42 });
+
+    assert.equal(first, true);
+    assert.equal(second, true, 'Custom events must never be deduplicated');
+    assert.equal(mockTransport.sentEvents.length, 2);
+    assert.notEqual(mockTransport.sentEvents[0].eventId, mockTransport.sentEvents[1].eventId);
+  });
+
+  // 21. Bounded retry queue: failed events are queued, retried, and capped
+  test('21. Failed deliveries are queued and flushed when transport recovers', async () => {
+    mockTransport.shouldFail = true;
+    const client = new BaseAnalyticsClient(mockTransport, memoryStorage);
+    client.init({ siteId: 'cda_prod_123', maxQueueSize: 5 });
+
+    await client.track('offline_event_1');
+    assert.equal(client.getPendingQueueSize(), 1, 'Failed event must be queued for retry');
+
+    // Transport recovers -> flushQueue delivers the buffered event
+    mockTransport.shouldFail = false;
+    const delivered = await client.flushQueue();
+
+    assert.equal(delivered, 1);
+    assert.equal(client.getPendingQueueSize(), 0);
+    assert.equal(mockTransport.sentEvents.length, 1);
+    assert.equal(mockTransport.sentEvents[0].event, 'offline_event_1');
+  });
+
+  test('22. Retry queue is bounded by maxQueueSize (oldest dropped)', async () => {
+    mockTransport.shouldFail = true;
+    const client = new BaseAnalyticsClient(mockTransport, memoryStorage);
+    client.init({ siteId: 'cda_prod_123', maxQueueSize: 3 });
+
+    for (let i = 0; i < 6; i++) {
+      await client.track(`burst_event_${i}`);
+    }
+
+    assert.equal(client.getPendingQueueSize(), 3, 'Queue must never exceed maxQueueSize');
+  });
+
+  // 23. WebTransport: beacon on hidden page, fetch-first when visible
+  test('23. WebTransport prefers sendBeacon while the page is hidden', async () => {
+    const beaconCalls: Array<{ url: string }> = [];
+    const savedDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+
+    Object.defineProperty(globalThis, 'document', { value: { visibilityState: 'hidden' }, configurable: true });
+    Object.defineProperty(globalThis, 'window', { value: {}, configurable: true });
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        sendBeacon: (url: string) => {
+          beaconCalls.push({ url });
+          return true;
+        },
+      },
+      configurable: true,
+    });
+
+    try {
+      const { WebTransport } = await import('../src/web/web-transport.js');
+      const transport = new WebTransport(false);
+      const ok = await transport.send('https://chodev.pro/api/analytics/collect', {
+        key: 'cda_prod_123',
+        platform: 'web',
+        type: 'pageview',
+        path: '/hidden',
+        timestamp: Date.now(),
+      }, 1000);
+
+      assert.equal(ok, true);
+      assert.equal(beaconCalls.length, 1, 'Hidden page must use sendBeacon');
+      assert.equal(beaconCalls[0].url, 'https://chodev.pro/api/analytics/collect');
+    } finally {
+      restoreDescriptor(globalThis, 'document', savedDocument);
+      restoreDescriptor(globalThis, 'navigator', savedNavigator);
+      restoreDescriptor(globalThis, 'window', savedWindow);
+    }
+  });
+
+  test('24. WebTransport falls back to sendBeacon when fetch fails while visible', async () => {
+    const beaconCalls: Array<{ url: string }> = [];
+    const savedDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const savedWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const savedFetch = globalThis.fetch;
+
+    Object.defineProperty(globalThis, 'document', { value: { visibilityState: 'visible' }, configurable: true });
+    Object.defineProperty(globalThis, 'window', { value: {}, configurable: true });
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        sendBeacon: (url: string) => {
+          beaconCalls.push({ url });
+          return true;
+        },
+      },
+      configurable: true,
+    });
+    globalThis.fetch = (async () => {
+      throw new Error('simulated network failure');
+    }) as any;
+
+    try {
+      const { WebTransport } = await import('../src/web/web-transport.js');
+      const transport = new WebTransport(false);
+      const ok = await transport.send('https://chodev.pro/api/analytics/collect', {
+        key: 'cda_prod_123',
+        platform: 'web',
+        type: 'pageview',
+        path: '/visible',
+        timestamp: Date.now(),
+      }, 500);
+
+      assert.equal(ok, true, 'Beacon last resort must rescue the failed fetch');
+      assert.equal(beaconCalls.length, 1);
+    } finally {
+      globalThis.fetch = savedFetch;
+      restoreDescriptor(globalThis, 'document', savedDocument);
+      restoreDescriptor(globalThis, 'navigator', savedNavigator);
+      restoreDescriptor(globalThis, 'window', savedWindow);
+    }
+  });
+
+  // 25. Data size budget: oversized data becomes a valid marker, never invalid JSON
+  test('25. Oversized event data is replaced with a valid _truncated marker', () => {
+    const privacy = new PrivacyManager(memoryStorage);
+    const config = validateAndNormalizeConfig({ siteId: 'cda_prod_123' });
+    const builder = new EventBuilder(config, privacy);
+
+    const bigProperties: Record<string, any> = {};
+    for (let i = 0; i < 40; i++) {
+      bigProperties[`field_${i}`] = 'x'.repeat(500);
+    }
+    const event = builder.buildEvent('custom', 'huge_event', bigProperties);
+
+    assert.ok(event);
+    assert.deepEqual(event!.data, { _truncated: true });
+    // The serialized payload must remain valid JSON (jsonb-safe on the backend)
+    assert.doesNotThrow(() => JSON.parse(JSON.stringify(event!.data)));
+  });
+
+  function restoreDescriptor(target: any, key: string, descriptor?: PropertyDescriptor) {
+    if (descriptor) {
+      Object.defineProperty(target, key, descriptor);
+    } else {
+      delete target[key];
+    }
+  }
 });

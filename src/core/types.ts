@@ -78,6 +78,14 @@ export interface AnalyticsEventPayload {
   event?: string | null;
   data?: Record<string, any> | null;
   timestamp?: number;
+
+  /**
+   * Client-generated unique event id (UUID v4).
+   * The backend uses it for idempotency: retries / duplicate deliveries of the
+   * same event (offline queue flush, fetch retry, beacon + fetch race) are
+   * stored exactly once, so metrics are never inflated.
+   */
+  eventId?: string;
 }
 
 export interface ITransport {
