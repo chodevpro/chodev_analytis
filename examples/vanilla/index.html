@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chợ Dev Analytics - Vanilla Example</title>
+  <style>
+    body { font-family: sans-serif; background: #0a0a0a; color: #ededed; padding: 40px; }
+    button { background: #0070f3; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #0051b3; }
+  </style>
+</head>
+<body>
+  <h1>Chợ Dev Analytics - Vanilla Demo</h1>
+  <p>Mở DevTools Console để xem sự kiện được gửi.</p>
+  <button id="trackBtn">Kích hoạt Custom Event</button>
+
+  <script type="module">
+    import { init, pageview, track } from '../../dist/index.mjs';
+
+    init({
+      siteId: 'cda_prod_demo123',
+      endpoint: 'https://chodev.pro/api/analytics/collect',
+      debug: true,
+    });
+
+    pageview();
+
+    document.getElementById('trackBtn').addEventListener('click', () => {
+      track('demo_button_clicked', { source: 'vanilla_html' });
+    });
+  </script>
+</body>
+</html>
