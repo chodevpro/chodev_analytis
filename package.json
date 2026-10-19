@@ -1,6 +1,6 @@
 {
   "name": "@chodev/analytics",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Lightweight, cross-platform Analytics and Remote Config SDK for Website, React, Next.js, and React Native",
   "author": "Chợ Dev <contact@chodev.pro>",
   "license": "MIT",
